@@ -74,10 +74,33 @@ export const getAllProducts = async (req: Request, res: Response) => {
     // Get category filter from query parameters
     const category = req.query.category as string;
 
+    // Get sorting parameter from query
+    const sortBy = req.query.sortBy as string;
+
     // Build match stage for category filter
     const matchStage: any = {};
     if (category) {
       matchStage.category = { $regex: category, $options: "i" }; // Case-insensitive match
+    }
+
+    // Build sort stage based on sortBy parameter
+    let sortStage: any = { standard_name: 1 }; // Default sort by name
+    switch (sortBy?.toLowerCase()) {
+      case "price_max":
+      case "maximum_price":
+        sortStage = { best_price: -1 }; // Highest price first
+        break;
+      case "price_min":
+      case "minimum_price":
+        sortStage = { best_price: 1 }; // Lowest price first
+        break;
+      case "vendors_max":
+      case "maximum_vendors":
+        sortStage = { vendors_count: -1 }; // Most vendors first
+        break;
+      default:
+        sortStage = { standard_name: 1 }; // Default alphabetical sort
+        break;
     }
 
     // First count unique standard_names for total count (with category filter if provided)
@@ -149,7 +172,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
           available: { $in: [true, "$all_products.available"] }, // Available if any vendor has it
         },
       },
-      { $sort: { standard_name: 1 } },
+      { $sort: sortStage },
       { $skip: skip },
       { $limit: limit },
     );
@@ -162,6 +185,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
       success: true,
       message: "Products fetched successfully.",
       filter: category ? { category } : null,
+      sort: sortBy || "standard_name",
       pagination: {
         total: uniqueProductsCount,
         page,
