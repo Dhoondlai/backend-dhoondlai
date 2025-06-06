@@ -71,75 +71,102 @@ export const getAllProducts = async (req: Request, res: Response) => {
     const limit = parseInt(req.query.limit as string) || 10;
     const skip = (page - 1) * limit;
 
-    // First count unique standard_names for total count
-    const uniqueProductsCount = await collections.products
-      ?.distinct("standard_name")
-      .then((arr) => arr.length);
+    // Get category filter from query parameters
+    const category = req.query.category as string;
 
-    // Fetch products grouped by standard_name with vendor count and best price
-    const products = await collections.products
-      ?.aggregate([
-        // Group by standard_name
-        {
-          $group: {
-            _id: "$standard_name",
-            vendors_count: { $sum: 1 }, // Count products with same standard_name
-            // Find the minimum price and corresponding vendor
-            min_price: { $min: "$current_price" },
-            all_products: {
-              $push: {
-                vendor: "$vendor",
-                current_price: "$current_price",
-                category: "$category",
-                available: "$available",
-              },
-            },
-          },
-        },
-        // Add best price vendor field
-        {
-          $addFields: {
-            best_price_vendor: {
-              $arrayElemAt: [
-                {
-                  $filter: {
-                    input: "$all_products",
-                    as: "product",
-                    cond: { $eq: ["$$product.current_price", "$min_price"] },
-                  },
-                },
-                0,
-              ],
-            },
-          },
-        },
-        // Project final fields
-        {
-          $project: {
-            _id: 0,
-            standard_name: "$_id",
-            vendors_count: 1,
-            best_price: "$min_price",
-            best_price_vendor: "$best_price_vendor.vendor",
-            category: { $arrayElemAt: ["$all_products.category", 0] },
-            available: { $in: [true, "$all_products.available"] }, // Available if any vendor has it
-          },
-        },
-        { $sort: { standard_name: 1 } },
-        { $skip: skip },
-        { $limit: limit },
-      ])
+    // Build match stage for category filter
+    const matchStage: any = {};
+    if (category) {
+      matchStage.category = { $regex: category, $options: "i" }; // Case-insensitive match
+    }
+
+    // First count unique standard_names for total count (with category filter if provided)
+    const countPipeline: any[] = [];
+    if (Object.keys(matchStage).length > 0) {
+      countPipeline.push({ $match: matchStage });
+    }
+    countPipeline.push({ $group: { _id: "$standard_name" } });
+    countPipeline.push({ $count: "total" });
+
+    const countResult = await collections.products
+      ?.aggregate(countPipeline)
       .toArray();
+    const uniqueProductsCount = countResult?.[0]?.total || 0;
+
+    // Build aggregation pipeline with optional category filter
+    const pipeline: any[] = [];
+
+    // Add match stage if category filter is provided
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
+    }
+
+    // Add the rest of the aggregation pipeline
+    pipeline.push(
+      // Group by standard_name
+      {
+        $group: {
+          _id: "$standard_name",
+          vendors_count: { $sum: 1 }, // Count products with same standard_name
+          // Find the minimum price and corresponding vendor
+          min_price: { $min: "$current_price" },
+          all_products: {
+            $push: {
+              vendor: "$vendor",
+              current_price: "$current_price",
+              category: "$category",
+              available: "$available",
+            },
+          },
+        },
+      },
+      // Add best price vendor field
+      {
+        $addFields: {
+          best_price_vendor: {
+            $arrayElemAt: [
+              {
+                $filter: {
+                  input: "$all_products",
+                  as: "product",
+                  cond: { $eq: ["$$product.current_price", "$min_price"] },
+                },
+              },
+              0,
+            ],
+          },
+        },
+      },
+      // Project final fields
+      {
+        $project: {
+          _id: 0,
+          standard_name: "$_id",
+          vendors_count: 1,
+          best_price: "$min_price",
+          best_price_vendor: "$best_price_vendor.vendor",
+          category: { $arrayElemAt: ["$all_products.category", 0] },
+          available: { $in: [true, "$all_products.available"] }, // Available if any vendor has it
+        },
+      },
+      { $sort: { standard_name: 1 } },
+      { $skip: skip },
+      { $limit: limit },
+    );
+
+    // Fetch products with the built pipeline
+    const products = await collections.products?.aggregate(pipeline).toArray();
 
     return res.status(200).send({
       status: 200,
       success: true,
       message: "Products fetched successfully.",
+      filter: category ? { category } : null,
       pagination: {
-        total: uniqueProductsCount || 0,
+        total: uniqueProductsCount,
         page,
         limit,
-        pages: Math.ceil((uniqueProductsCount || 0) / limit),
+        pages: Math.ceil(uniqueProductsCount / limit),
       },
       length: products?.length,
       data: products,
