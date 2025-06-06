@@ -77,10 +77,21 @@ export const getAllProducts = async (req: Request, res: Response) => {
     // Get sorting parameter from query
     const sortBy = req.query.sortBy as string;
 
-    // Build match stage for category filter
-    const matchStage: any = {};
+    // Get search parameter from query and decode URL encoding (+ and %20 to spaces)
+    const searchRaw = req.query.search as string;
+    const search = searchRaw
+      ? decodeURIComponent(searchRaw.replace(/\+/g, " "))
+      : undefined;
+
+    // Build match stage for category, search filters, and availability
+    const matchStage: any = {
+      available: true, // Only show available products
+    };
     if (category) {
       matchStage.category = { $regex: category, $options: "i" }; // Case-insensitive match
+    }
+    if (search) {
+      matchStage.standard_name = { $regex: search, $options: "i" }; // Case-insensitive search
     }
 
     // Build sort stage based on sortBy parameter
@@ -103,7 +114,7 @@ export const getAllProducts = async (req: Request, res: Response) => {
         break;
     }
 
-    // First count unique standard_names for total count (with category filter if provided)
+    // First count unique standard_names for total count (with filters if provided)
     const countPipeline: any[] = [];
     if (Object.keys(matchStage).length > 0) {
       countPipeline.push({ $match: matchStage });
@@ -116,10 +127,10 @@ export const getAllProducts = async (req: Request, res: Response) => {
       .toArray();
     const uniqueProductsCount = countResult?.[0]?.total || 0;
 
-    // Build aggregation pipeline with optional category filter
+    // Build aggregation pipeline with optional filters
     const pipeline: any[] = [];
 
-    // Add match stage if category filter is provided
+    // Add match stage if filters are provided
     if (Object.keys(matchStage).length > 0) {
       pipeline.push({ $match: matchStage });
     }
@@ -180,11 +191,16 @@ export const getAllProducts = async (req: Request, res: Response) => {
     // Fetch products with the built pipeline
     const products = await collections.products?.aggregate(pipeline).toArray();
 
+    // Build filter object for response
+    const filters: any = {};
+    if (category) filters.category = category;
+    if (search) filters.search = search;
+
     return res.status(200).send({
       status: 200,
       success: true,
       message: "Products fetched successfully.",
-      filter: category ? { category } : null,
+      filter: Object.keys(filters).length > 0 ? filters : null,
       sort: sortBy || "standard_name",
       pagination: {
         total: uniqueProductsCount,
